@@ -1,9 +1,31 @@
-﻿using System;
+﻿using Microsoft.Extensions.Logging;
+using nanoFramework.Device.Bluetooth;
+using nanoFramework.Device.Bluetooth.Advertisement;
+using nanoFramework.Logging;
+using nanoFramework.Logging.Debug;
+using System;
+using System.Device.Gpio;
+using System.Threading;
 
 namespace ESP32App.Services
 {
     public class ApplePopupsService
     {
+        private static DebugLogger _logger;
+
+        //private static BluetoothLEAdvertisementPublisher publisher;
+        private static BluetoothLEManufacturerData manufacturerData;
+        private static Guid uuid = new Guid("6A67D5BC-1F87-11EF-BC15-AFD3B90CADFA");
+        //private static byte major = 1;
+        //private static byte minor = 0;
+        //private static byte txPower = -59;
+
+
+        private static GpioController gpioController;
+        private static GpioPin led;
+
+        private const int delayBaseInSeconds = 10;
+
         private static readonly byte[][] Devices = new byte[][]
         {
               // Airpods
@@ -41,7 +63,6 @@ namespace ESP32App.Services
               // Beats Studio Buds Plus
               new byte[] {0x1e, 0xff, 0x4c, 0x00, 0x07, 0x19, 0x07, 0x16, 0x20, 0x75, 0xaa, 0x30, 0x01, 0x00, 0x00, 0x45, 0x12, 0x12, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
         };
-
         private static readonly byte[][] ShortDevices = new byte[][]
         {
               // AppleTV Setup
@@ -73,6 +94,160 @@ namespace ESP32App.Services
         };
 
 
+        public static void Initialize()
+        {
+            #region Logger
+            _logger = new DebugLogger("Console");
+            LogDispatcher.LoggerFactory = new DebugLoggerFactory();
+            #endregion
+
+            #region Bluetooth
+
+            manufacturerData = GetManufacturerData();
+            #endregion
+
+            #region LED
+
+            gpioController = new GpioController();
+
+            led = gpioController.OpenPin(2, PinMode.Output);
+            led.Write(PinValue.Low);
+
+            #endregion
+
+            _logger.LogInformation($"Initialization complete.");
+        }
+
+        public static void Popups()
+        {
+            _logger.LogInformation("Start Pop-up.");
+            while (true)
+            {
+                led.Toggle();
+
+                BluetoothLEAdvertisement advertisement = GetAdvertisement();
+                BluetoothLEAdvertisementDataSection dataSection = GetRandomDataSection();
+
+                advertisement.DataSections.Add(dataSection);
+                advertisement.LocalName = "Airpods Pro";
+
+                BluetoothLEAdvertisementPublisher publisher = new BluetoothLEAdvertisementPublisher(advertisement);
+
+                _logger.LogInformation($"Ciallo~");
+
+                publisher.Start();
+                led.Toggle();
+
+                var random = new Random();
+                var delay = delayBaseInSeconds + random.Next(20);
+                Thread.Sleep(delay * 1000);
+
+                publisher.Stop();
+            }
+        }
+
+        private static BluetoothLEAdvertisement GetAdvertisement()
+        {
+            BluetoothLEAdvertisement advertisement = new BluetoothLEAdvertisement()
+            {
+                Flags = BluetoothLEAdvertisementFlags.GeneralDiscoverableMode |
+                                                         BluetoothLEAdvertisementFlags.DualModeControllerCapable |
+                                                         BluetoothLEAdvertisementFlags.DualModeHostCapable,
+
+            };
+
+            advertisement.ManufacturerData.Add(manufacturerData);
+            return advertisement;
+        }
+
+
+        private const byte ADV_TYPE_IND = 0x00; // 可连接的非定向广播
+        private const byte ADV_TYPE_SCAN_IND = 0x02; // 可扫描的非定向广播
+        private const byte ADV_TYPE_NONCONN_IND = 0x03; // 不可连接的非定向广播
+        private const byte ADV_TYPE_DIRECT_IND_LOW = 0x04; // 可连接的定向广播
+        private const byte ADV_TYPE_DIRECT_IND_HIGH = 0x01;
+
+        private static BluetoothLEAdvertisementDataSection GetRandomDataSection()
+        {
+            var dataType = GetRandomDataType();
+            var data = GetRandomData();
+            BluetoothLEAdvertisementDataSection result = new()
+            {
+                DataType = dataType,
+                Data = data,
+            };
+
+            return result;
+
+            byte GetRandomDataType()
+            {
+                var random = new Random();
+                var dataType = random.Next(3) switch
+                {
+                    0 => ADV_TYPE_IND,
+                    1 => ADV_TYPE_SCAN_IND,
+                    _ => ADV_TYPE_NONCONN_IND,
+                };
+                return dataType;
+            }
+
+            Buffer GetRandomData()
+            {
+                var random = new Random();
+                var data = random.Next(2) switch
+                {
+                    0 => Devices[random.Next(17)],
+                    _ => ShortDevices[random.Next(13)],
+                };
+
+                return new(data);
+            }
+        }
+
+        private static BluetoothLEManufacturerData GetManufacturerData()
+        {
+            // Create a manufacturer data section:
+            BluetoothLEManufacturerData manufacturerData = new BluetoothLEManufacturerData();
+
+            // Set the company ID for the manufacturer data.
+            // 0x004C   Apple, Inc.
+            manufacturerData.CompanyId = 0x004c;
+            // Create payload
+            DataWriter writer = new();
+
+            // last 2 bytes of Apple's iBeacon
+            writer.WriteBytes(new byte[] { 0x02, 0x15 });
+
+            // Write Proximity UUID
+            var array = uuid.ToByteArray();
+
+            writer.WriteBytes(array);
+            //writer.WriteBytes(new byte[] 
+            //{
+            //    0xe2, 0xc5, 0x6d, 0xb5,
+            //    0xdf, 0xfb, 0x48, 0xd2,
+            //    0xb0, 0x60, 0xd0, 0xf5,
+            //    0xa7, 0x10, 0x96, 0xe0, 
+            //});
+
+            // Write Major/Minor
+            writer.WriteByte(0x00);
+            writer.WriteByte(0x00);
+            writer.WriteByte(0x00);
+            writer.WriteByte(0x01);
+
+            writer.WriteByte(0x12);
+
+            manufacturerData.Data = writer.DetachBuffer();
+            return manufacturerData;
+        }
+
+        private static void Publisher_StatusChanged(object sender, BluetoothLEAdvertisementPublisherStatusChangedEventArgs args)
+        {
+            BluetoothLEAdvertisementPublisher pub = sender as BluetoothLEAdvertisementPublisher;
+
+            _logger.LogError($"Status:{args.Status} Error:{args.Error} TxPowerLevel:{args.SelectedTransmitPowerLevelInDBm}");
+        }
 
     }
 }
